@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Presidio Optimizer - PII-maskeringsoptimering</title>
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+    <header>
+        <h1>Presidio Optimizer</h1>
+        <p class="subtitle">AI-driven PII-maskeringsoptimering</p>
+        <div id="date-display"></div>
+        <div id="session-indicator" class="session-indicator hidden">
+            <span id="session-indicator-name"></span>
+            <button id="back-to-sessions-btn" class="btn btn-small btn-secondary">Tillbaka till sessioner</button>
+        </div>
+    </header>
+
+    <!-- Login overlay -->
+    <div id="login-overlay" class="login-overlay">
+        <div class="login-card">
+            <h2>Logga in</h2>
+            <p>Ange lösenord för att använda Presidio Optimizer</p>
+            <form id="login-form">
+                <input type="password" id="login-password" placeholder="Lösenord" autocomplete="current-password" required>
+                <button type="submit" class="btn btn-primary">Logga in</button>
+            </form>
+            <p id="login-error" class="login-error hidden">Fel lösenord</p>
+        </div>
+    </div>
+
+    <!-- Session manager -->
+    <div id="session-manager-section" class="hidden">
+        <div class="session-manager-container">
+            <div class="card session-create">
+                <h2>Ny session</h2>
+                <form id="create-session-form" class="session-create-form">
+                    <input type="text" id="session-name-input" placeholder="Namnge din session..." required maxlength="100" autocomplete="off">
+                    <button type="submit" id="create-session-btn" class="btn btn-primary">Skapa session</button>
+                </form>
+            </div>
+            <div class="card">
+                <h2>Tidigare sessioner</h2>
+                <div id="session-list"></div>
+                <p id="session-list-empty" class="session-list-empty hidden">Inga sessioner hittades. Skapa en ny session ovan.</p>
+            </div>
+        </div>
+    </div>
+
+    <main class="hidden" id="main-content">
+        <!-- Step 1: Upload -->
+        <section id="upload-section" class="card">
+            <h2>1. Ladda upp dokument</h2>
+            <div id="drop-zone" class="drop-zone">
+                <div class="drop-zone-content">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                        <polyline points="17 8 12 3 7 8"/>
+                        <line x1="12" y1="3" x2="12" y2="15"/>
+                    </svg>
+                    <p>Dra och släpp en fil här, eller <label for="file-input" class="browse-link">välj fil</label></p>
+                    <p class="file-types">DOCX, XLSX, PDF, TXT (max 10 MB)</p>
+                </div>
+                <input type="file" id="file-input" accept=".docx,.xlsx,.pdf,.txt" hidden>
+            </div>
+            <div id="file-info" class="file-info hidden"></div>
+            <button id="analyze-btn" class="btn btn-primary hidden">Analysera</button>
+        </section>
+
+        <!-- Step 2: Results + Feedback -->
+        <section id="results-section" class="card hidden">
+            <div class="results-header">
+                <h2>2. Analysresultat</h2>
+                <div class="results-stats" id="results-stats"></div>
+            </div>
+
+            <div class="entity-legend" id="entity-legend"></div>
+
+            <div class="annotated-text-container">
+                <div id="annotated-text" class="annotated-text"></div>
+            </div>
+
+            <div class="feedback-instructions">
+                <h3>Ge feedback</h3>
+                <ul>
+                    <li><strong>Klicka</strong> på en markerad entitet för att markera som <span class="fp-label">false positive</span> (felaktigt detekterad)</li>
+                    <li><strong>Markera text</strong> med musen och välj entitetstyp för att markera som <span class="fn-label">false negative</span> (missad PII)</li>
+                </ul>
+            </div>
+
+            <div class="feedback-summary" id="feedback-summary" class="hidden">
+                <h3>Feedback</h3>
+                <div id="feedback-counts"></div>
+                <button id="clear-feedback-btn" class="btn btn-small btn-secondary">Rensa feedback</button>
+            </div>
+
+            <div class="action-buttons">
+                <button id="submit-feedback-btn" class="btn btn-primary" disabled>Skicka feedback &amp; optimera</button>
+            </div>
+        </section>
+
+        <!-- Entity type selector popup -->
+        <div id="entity-popup" class="entity-popup hidden">
+            <div class="entity-popup-header">Välj entitetstyp:</div>
+            <div id="entity-popup-list" class="entity-popup-list"></div>
+        </div>
+
+        <!-- Step 3: Optimization result -->
+        <section id="optimization-section" class="card hidden">
+            <h2>3. Optimeringsresultat</h2>
+            <div id="optimization-reasoning" class="reasoning-box"></div>
+            <div id="optimization-changes" class="changes-list"></div>
+            <div class="action-buttons">
+                <button id="reanalyze-btn" class="btn btn-primary">Analysera om med ny konfiguration</button>
+            </div>
+        </section>
+
+        <!-- Step 4: Comparison -->
+        <section id="comparison-section" class="card hidden">
+            <h2>4. Jämförelse före / efter</h2>
+            <div id="comparison-stats" class="comparison-stats"></div>
+            <div class="split-panel">
+                <div class="split-left">
+                    <h3>Före (v<span id="old-version">1</span>)</h3>
+                    <div id="old-results" class="annotated-text"></div>
+                </div>
+                <div class="split-right">
+                    <h3>Efter (v<span id="new-version">2</span>)</h3>
+                    <div id="new-results" class="annotated-text"></div>
+                </div>
+            </div>
+            <div class="action-buttons">
+                <button id="iterate-btn" class="btn btn-secondary">Fortsätt iterera (ny feedback)</button>
+                <button id="accept-btn" class="btn btn-primary">Acceptera konfiguration</button>
+            </div>
+        </section>
+
+        <!-- Config panel (collapsible) -->
+        <section id="config-section" class="card hidden">
+            <div class="config-header" id="config-toggle">
+                <h2>Konfiguration</h2>
+                <span class="toggle-icon">&#9660;</span>
+            </div>
+            <div id="config-content" class="config-content hidden">
+                <div id="config-viewer"></div>
+                <div class="config-actions">
+                    <button id="export-json-btn" class="btn btn-small btn-secondary">Exportera JSON</button>
+                    <button id="export-yaml-btn" class="btn btn-small btn-secondary">Exportera YAML</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Iteration history -->
+        <section id="history-section" class="card hidden">
+            <h2>Optimeringshistorik</h2>
+            <div id="history-timeline" class="timeline"></div>
+        </section>
+    </main>
+    <!-- end main-content -->
+
+    <div id="loading-overlay" class="loading-overlay hidden">
+        <div class="spinner"></div>
+        <p id="loading-message">Bearbetar...</p>
+    </div>
+
+    <script src="js/api-client.js"></script>
+    <script src="js/text-annotator.js"></script>
+    <script src="js/file-upload.js"></script>
+    <script src="js/config-panel.js"></script>
+    <script src="js/iteration-history.js"></script>
+    <script src="js/session-manager.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
