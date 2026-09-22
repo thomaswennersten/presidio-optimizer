@@ -1,3 +1,14 @@
+# Presidio Optimizer
+# Copyright (C) 2026 Sambruk
+#
+# Detta program är fri programvara; du får sprida och ändra det enligt
+# villkoren i GNU General Public License version 2, som den publicerats av
+# Free Software Foundation.
+#
+# Programmet distribueras i hopp om att det ska vara användbart, men UTAN
+# NÅGON GARANTI. Se GNU General Public License för fler detaljer.
+# Se filen LICENSE.
+
 """
 Persistent sessionslagring för Presidio Optimizer.
 
@@ -13,6 +24,8 @@ Varje session lagras i db/sessions/{session_id}/ med:
 
 import json
 import os
+import re
+import shutil
 import uuid
 import logging
 from datetime import datetime
@@ -91,6 +104,29 @@ class SessionStore:
                     sessions.append(meta)
         sessions.sort(key=lambda s: s.get("created_at", ""), reverse=True)
         return sessions
+
+    def delete_session(self, session_id: str) -> bool:
+        """Ta bort en session och allt den innehåller.
+
+        Publicerade regelverk ligger i db/configs och rörs INTE — de är en
+        kopia som maskera använder, och ett regelverk som är i drift får inte
+        försvinna för att någon städar bland sina sessioner.
+
+        Två spärrar på sökvägen, samma som vid borttagning av publicerade
+        regelverk: id:t måste bestå av enkla tecken, och den utlösta sökvägen
+        måste ligga kvar inuti sessionskatalogen. Den andra behövs för att
+        `..` annars kan ta sig ut även när den första ser betryggande ut.
+        """
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", session_id or ""):
+            return False
+        bas = os.path.abspath(self.base_dir)
+        mal = os.path.abspath(os.path.join(bas, session_id))
+        if os.path.commonpath([bas, mal]) != bas or mal == bas:
+            return False
+        if not os.path.isdir(mal):
+            return False
+        shutil.rmtree(mal)
+        return True
 
     def update_session(self, session_id: str, updates: Dict[str, Any]):
         """Uppdatera sessionens metadata."""

@@ -1,3 +1,14 @@
+# Presidio Optimizer
+# Copyright (C) 2026 Sambruk
+#
+# Detta program är fri programvara; du får sprida och ändra det enligt
+# villkoren i GNU General Public License version 2, som den publicerats av
+# Free Software Foundation.
+#
+# Programmet distribueras i hopp om att det ska vara användbart, men UTAN
+# NÅGON GARANTI. Se GNU General Public License för fler detaljer.
+# Se filen LICENSE.
+
 """
 Presidio-analystjänst med dynamisk konfiguration.
 
@@ -95,21 +106,75 @@ class PresidioService:
             score_threshold = config.score_threshold
             entity_settings = config.entity_settings
 
-        return self._analyze_local(text, language, score_threshold, entity_settings)
+        # Presidios EGEN tröskel körs INNE i analyze() och sållar bort träffar
+        # innan den per-entitet-tröskeln nedan hinner titta på dem. En entitet
+        # med lägre tröskel än den globala kunde därför aldrig släppas igenom —
+        # inställningen var död kod.
+        #
+        # Det märktes på svenska personnummer: ett nummer som inte klarar
+        # Luhn-kontrollen får poängen 0,4 och SWEDISH_PERSONNUMMER har tröskeln
+        # 0,4, men den globala 0,5 tog dem först. Bara de som råkade ligga nära
+        # ordet "personnummer" överlevde, tack vare Presidios kontextpåslag.
+        #
+        # Lösningen är att släppa in allt ned till den LÄGSTA tröskel någon
+        # aktiverad entitet har, och låta filtreringen per entitet avgöra.
+        # Entiteter utan egen inställning bedöms fortfarande mot den globala.
+        golv = score_threshold
+        for ec in (entity_settings or {}).values():
+            if isinstance(ec, dict):
+                ec = EntityConfig(**ec)
+            if ec.enabled:
+                golv = min(golv, ec.threshold)
+
+        return self._analyze_local(text, language, score_threshold, entity_settings,
+                                   getattr(config, "exclusions", None) if config else None,
+                                   analys_golv=golv)
 
     def analyze_with_config(self, text: str, config: PresidioConfig) -> List[Dict[str, Any]]:
         """Analyze text using a specific configuration. Rebuilds engine if needed."""
         self.rebuild_engine(config)
         return self.analyze_text(text, config.languages[0] if config.languages else "sv", config)
 
+    @staticmethod
+    def _ar_undantagen(fragment: str, entity_type: str, exclusions) -> bool:
+        f = (fragment or "").strip().lower()
+        for u in exclusions or []:
+            if isinstance(u, str):
+                u = {"text": u}
+            if (u.get("text") or "").strip().lower() != f:
+                continue
+            et = u.get("entity_type")
+            if not et or et == entity_type:
+                return True
+        return False
+
     def _analyze_local(self, text: str, language: str, score_threshold: float = 0.5,
-                       entity_settings: Dict[str, EntityConfig] = None) -> List[Dict[str, Any]]:
+                       entity_settings: Dict[str, EntityConfig] = None,
+                       exclusions=None,
+                       analys_golv: float = None) -> List[Dict[str, Any]]:
         """Analyze text using local Presidio engine with dual-language NER."""
+        # Golvet som skickas in i Presidio är INTE samma tal som den globala
+        # tröskeln. Presidios egen sållning sker före filtreringen per entitet,
+        # så ett golv som är högre än någon entitets tröskel gör den
+        # inställningen verkningslös. Se analyze_text().
+        golv = score_threshold if analys_golv is None else analys_golv
         base_entities = [
             "PERSON", "EMAIL_ADDRESS", "PHONE_NUMBER",
             "CREDIT_CARD", "IBAN_CODE", "NRP",
             "LOCATION", "DATE_TIME", "IP_ADDRESS",
             "MEDICAL_LICENSE", "URL",
+        ]
+
+        # Den engelska analysen finns för att Presidios MÖNSTER-igenkännare
+        # (e-post, kort, IBAN, IP, URL) är registrerade under "en". Dess NER-modell
+        # däremot är ren brusgenerator på svensk text: en_core_web_sm klassar
+        # "Kontaktperson", "denna" och "Se denna" som PERSON och "webbsida" som GPE,
+        # alla med Presidios fasta poäng 0.85 — alltså omöjliga att tröskla bort.
+        # Den svenska modellen hittar samma verkliga namn utan skräpet.
+        # Därför: mönsterentiteter från engelska passet, NER enbart från svenska.
+        EN_PATTERN_ENTITIES = [
+            "EMAIL_ADDRESS", "PHONE_NUMBER", "CREDIT_CARD",
+            "IBAN_CODE", "IP_ADDRESS", "URL", "MEDICAL_LICENSE",
         ]
 
         sv_entities = base_entities + [
@@ -125,6 +190,8 @@ class PresidioService:
                           if e not in entity_settings or entity_settings[e].enabled]
             base_entities = [e for e in base_entities
                             if e not in entity_settings or entity_settings[e].enabled]
+            EN_PATTERN_ENTITIES = [e for e in EN_PATTERN_ENTITIES
+                            if e not in entity_settings or entity_settings[e].enabled]
 
         all_results = []
 
@@ -133,7 +200,7 @@ class PresidioService:
                 sv_results = self.analyzer.analyze(
                     text=text, language="sv",
                     entities=sv_entities,
-                    score_threshold=score_threshold,
+                    score_threshold=golv,
                 )
                 all_results.extend(sv_results)
             except Exception as e:
@@ -142,8 +209,8 @@ class PresidioService:
             try:
                 en_results = self.analyzer.analyze(
                     text=text, language="en",
-                    entities=base_entities,
-                    score_threshold=score_threshold,
+                    entities=EN_PATTERN_ENTITIES,
+                    score_threshold=golv,
                 )
                 all_results.extend(en_results)
             except Exception as e:
@@ -155,7 +222,7 @@ class PresidioService:
                 results = self.analyzer.analyze(
                     text=text, language=language,
                     entities=base_entities,
-                    score_threshold=score_threshold,
+                    score_threshold=golv,
                 )
             except Exception as e:
                 logger.error(f"Analysis error for '{language}': {e}")
@@ -176,6 +243,10 @@ class PresidioService:
                     if r.score >= score_threshold:
                         filtered.append(r)
             results = filtered
+
+        if exclusions:
+            results = [r for r in results
+                       if not self._ar_undantagen(text[r.start:r.end], r.entity_type, exclusions)]
 
         return [
             {

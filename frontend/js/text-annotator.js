@@ -1,3 +1,16 @@
+/*
+ * Presidio Optimizer
+ * Copyright (C) 2026 Sambruk
+ *
+ * Detta program är fri programvara; du får sprida och ändra det enligt
+ * villkoren i GNU General Public License version 2, som den publicerats av
+ * Free Software Foundation.
+ *
+ * Programmet distribueras i hopp om att det ska vara användbart, men UTAN
+ * NÅGON GARANTI. Se GNU General Public License för fler detaljer.
+ * Se filen LICENSE.
+ */
+
 /**
  * Interaktiv textmarkering - kärnkomponent.
  *
@@ -7,6 +20,18 @@
  * - Hovra → tooltip med entitetstyp + score
  */
 const TextAnnotator = (() => {
+    // Egna typer sparas lokalt i webbläsaren. Bakänden validerar inte
+    // entity_type (den är en fri sträng), så de går hela vägen till optimeringen.
+    const CUSTOM_KEY = 'optimizer_custom_entity_types';
+
+    function loadCustomTypes() {
+        try { return JSON.parse(localStorage.getItem(CUSTOM_KEY)) || {}; }
+        catch { return {}; }
+    }
+    function saveCustomTypes(map) {
+        localStorage.setItem(CUSTOM_KEY, JSON.stringify(map));
+    }
+
     const ENTITY_TYPES = [
         'PERSON', 'SWEDISH_PERSONNUMMER', 'SWEDISH_SAMORDNINGSNUMMER',
         'SWEDISH_ORGANISATIONSNUMMER', 'SWEDISH_PHONE_NUMBER', 'PHONE_NUMBER',
@@ -33,10 +58,52 @@ const TextAnnotator = (() => {
         'MEDICAL_LICENSE': 'Medicinsk licens',
     };
 
+    // Slå in de sparade egna typerna direkt vid start.
+    (function initCustomTypes() {
+        const custom = loadCustomTypes();
+        for (const [typ, etikett] of Object.entries(custom)) {
+            if (!ENTITY_TYPES.includes(typ)) ENTITY_TYPES.push(typ);
+            ENTITY_LABELS[typ] = etikett;
+            ensureColor(typ);
+        }
+    })();
+
+    // Egna typer saknar CSS-regel — skapa en deterministisk färg ur namnet så att
+    // samma typ alltid får samma färg, även mellan sessioner.
+    function ensureColor(typ) {
+        const id = `entity-color-${typ}`;
+        if (document.getElementById(id)) return;
+        let h = 0;
+        for (let i = 0; i < typ.length; i++) h = (h * 31 + typ.charCodeAt(i)) % 360;
+        const style = document.createElement('style');
+        style.id = id;
+        style.textContent = `.entity-${typ} { background: hsla(${h},65%,55%,0.30);` +
+                            ` border-bottom-color: hsl(${h},65%,60%); }`;
+        document.head.appendChild(style);
+    }
+
+    function addCustomType(rawName) {
+        const etikett = String(rawName || '').trim();
+        if (!etikett) return null;
+        // Presidio-konventionen är VERSALER_MED_UNDERSTRECK.
+        const typ = etikett.toUpperCase()
+            .replace(/[ÅÄ]/g, 'A').replace(/Ö/g, 'O')
+            .replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+        if (!typ) return null;
+        if (!ENTITY_TYPES.includes(typ)) ENTITY_TYPES.push(typ);
+        ENTITY_LABELS[typ] = etikett;
+        ensureColor(typ);
+        const custom = loadCustomTypes();
+        custom[typ] = etikett;
+        saveCustomTypes(custom);
+        return typ;
+    }
+
     let falsePositives = [];
     let falseNegatives = [];
     let currentText = '';
     let currentResults = [];
+    let currentReadOnly = false;
     let onFeedbackChange = null;
 
     function init(callback) {
@@ -60,12 +127,18 @@ const TextAnnotator = (() => {
     function render(container, text, results, readOnly) {
         currentText = text;
         currentResults = results;
+        currentReadOnly = !!readOnly;
         container.innerHTML = '';
 
         if (!text) return;
 
-        // Sort results by start position
-        const sorted = [...results].sort((a, b) => a.start - b.start);
+        // Egna taggningar (false negatives) ritas i SAMMA svep som träffarna.
+        // Tidigare fanns bara en stubbe som rensade gamla markeringar utan att
+        // rita nya, så en tagg sparades men syntes aldrig i texten.
+        const sorted = [
+            ...results.map(r => ({ ...r, _fn: false })),
+            ...falseNegatives.map(f => ({ ...f, _fn: true })),
+        ].sort((a, b) => a.start - b.start || (a._fn ? 1 : -1));
 
         let lastIdx = 0;
         const frag = document.createDocumentFragment();
@@ -80,7 +153,9 @@ const TextAnnotator = (() => {
 
             // Entity span
             const span = document.createElement('span');
-            span.className = `entity-annotation entity-${r.entity_type}`;
+            span.className = r._fn
+                ? `false-negative-mark entity-${r.entity_type}`
+                : `entity-annotation entity-${r.entity_type}`;
             span.textContent = text.slice(r.start, r.end);
             span.dataset.start = r.start;
             span.dataset.end = r.end;
@@ -88,11 +163,50 @@ const TextAnnotator = (() => {
             span.dataset.score = r.score || 0;
             span.dataset.recognizer = r.recognizer_name || '';
 
+            if (r._fn) {
+                span.title = `Du har taggat detta som ${ENTITY_LABELS[r.entity_type] || r.entity_type}`
+                           + ' — klicka för att ångra';
+                if (!readOnly) {
+                    span.addEventListener('click', () => {
+                        falseNegatives = falseNegatives.filter(
+                            f => !(f.start === r.start && f.end === r.end
+                                   && f.entity_type === r.entity_type));
+                        notifyChange();
+                        render(container, currentText, currentResults, currentReadOnly);
+                    });
+                }
+                frag.appendChild(span);
+                // Liten etikett efter texten, så det syns VAD man taggade den som.
+                const badge = document.createElement('sup');
+                badge.className = 'fn-typ';
+                // Etiketten är text i DOM:en som INTE finns i originaltexten.
+                // Utan den här märkningen räknar getTextPosition med den, och
+                // varje egen tagg förskjuter alla senare markeringar lika många
+                // tecken som typnamnet är långt.
+                badge.dataset.dekor = '1';
+                badge.textContent = ENTITY_LABELS[r.entity_type] || r.entity_type;
+                frag.appendChild(badge);
+                lastIdx = r.end;
+                continue;
+            }
+
             if (!readOnly) {
                 span.addEventListener('click', handleEntityClick);
             }
             span.addEventListener('mouseenter', showTooltip);
             span.addEventListener('mouseleave', hideTooltip);
+
+            // Osäkerheten ska synas UTAN att man hovrar. Signalen sitter i
+            // ramens FORM, inte i färgen — bottenramens färg bär redan
+            // entitetstypen, och en signal som bara är färg är otillgänglig.
+            //
+            // Nivåerna följer vad poängen faktiskt betyder i kedjan:
+            //   0,85  mönster + kontrollsiffra stämmer, eller NER-träff
+            //   0,75  kontrollsiffran stämmer INTE, men ett kontextord finns nära
+            //   0,40  kontrollsiffran stämmer inte och inget kontextord finns
+            const poang = Number(r.score) || 0;
+            if (poang < 0.5) span.classList.add('poang-lag');
+            else if (poang < 0.8) span.classList.add('poang-medel');
 
             // Check if marked as false positive
             const isFP = falsePositives.some(
@@ -109,9 +223,7 @@ const TextAnnotator = (() => {
             frag.appendChild(document.createTextNode(text.slice(lastIdx)));
         }
 
-        // Apply false negative marks
         container.appendChild(frag);
-        applyFalseNegativeMarks(container);
     }
 
     function renderLegend(container, results) {
@@ -121,15 +233,33 @@ const TextAnnotator = (() => {
             if (!types.has(t)) continue;
             const item = document.createElement('span');
             item.className = 'legend-item';
-            item.innerHTML = `<span class="legend-dot entity-${t}" style="background:var(--c)"></span>${ENTITY_LABELS[t] || t}`;
-            // Extract background color from CSS class
-            const tmp = document.createElement('span');
-            tmp.className = `entity-annotation entity-${t}`;
-            document.body.appendChild(tmp);
-            const bg = getComputedStyle(tmp).borderBottomColor;
-            document.body.removeChild(tmp);
-            item.querySelector('.legend-dot').style.background = bg;
+            // Svatchen ritas med SAMMA klass som markeringen i texten, så att
+            // färgen i förklaringen är identisk med den man ser i dokumentet.
+            // Tidigare var svatchen heltäckande medan markeringen var 30 % genomskinlig.
+            const antal = results.filter(r => r.entity_type === t).length;
+            item.innerHTML = `<span class="legend-swatch entity-${t}"></span>` +
+                             `${ENTITY_LABELS[t] || t} <span class="legend-count">${antal}</span>`;
+            item.title = `${t} — ${antal} förekomster i texten`;
             container.appendChild(item);
+        }
+
+        // Förklara formerna, men bara när det finns något att förklara.
+        const lag = results.filter(r => (Number(r.score) || 0) < 0.5).length;
+        const medel = results.filter(r => {
+            const p = Number(r.score) || 0;
+            return p >= 0.5 && p < 0.8;
+        }).length;
+        if (lag || medel) {
+            const forklaring = document.createElement('span');
+            forklaring.className = 'legend-item legend-osakerhet';
+            const delar = [];
+            if (lag) delar.push(`<span class="legend-swatch poang-lag"></span>${lag} osäkra`);
+            if (medel) delar.push(`<span class="legend-swatch poang-medel"></span>${medel} delvis säkra`);
+            forklaring.innerHTML = delar.join(' ');
+            forklaring.title = 'Streckad ram: mönstret stämmer men kontrollsiffran gör det '
+                             + 'inte. Prickad ram: kontrollsiffran stämmer inte, men ett '
+                             + 'kontextord i närheten höjde poängen. Hovra för exakt poäng.';
+            container.appendChild(forklaring);
         }
     }
 
@@ -187,6 +317,12 @@ const TextAnnotator = (() => {
         let endPos = -1;
 
         function walk(node) {
+            // Rent visuella tillägg (typetiketten efter en egen tagg) finns inte
+            // i originaltexten och får varken räknas eller synkas mot.
+            if (node.nodeType === Node.ELEMENT_NODE && node.dataset && node.dataset.dekor) {
+                return;
+            }
+
             if (node === range.startContainer) {
                 startPos = offset + range.startOffset;
             }
@@ -196,9 +332,16 @@ const TextAnnotator = (() => {
             if (node.nodeType === Node.TEXT_NODE) {
                 offset += node.textContent.length;
             } else if (node.nodeType === Node.ELEMENT_NODE) {
-                if (node.classList && node.classList.contains('entity-annotation')) {
-                    const s = parseInt(node.dataset.start);
-                    const e = parseInt(node.dataset.end);
+                // Både Presidios träffar och egna taggar bär sina positioner i
+                // originaltexten. Synka mot dem i stället för att lita på den
+                // hopräknade längden — då kan ingen drift bli bestående, oavsett
+                // vad renderingen råkar lägga till i DOM:en.
+                const markering = node.classList && (
+                    node.classList.contains('entity-annotation') ||
+                    node.classList.contains('false-negative-mark'));
+                if (markering && node.dataset.start !== undefined) {
+                    const s = parseInt(node.dataset.start, 10);
+                    const e = parseInt(node.dataset.end, 10);
                     if (node === range.startContainer || node.contains(range.startContainer)) {
                         startPos = s + (range.startOffset || 0);
                     }
@@ -226,6 +369,25 @@ const TextAnnotator = (() => {
         });
     }
 
+    // Gemensam väg för att tagga en missad uppgift. Fanns tidigare duplicerad
+    // i två klick-hanterare, och ingen av dem varnade när markeringen överlappade
+    // en redan detekterad entitet — då försvann taggen tyst vid utritningen.
+    function taggaFalseNegative(start, end, text, typ) {
+        const krock = currentResults.find(r => start < r.end && end > r.start);
+        if (krock) {
+            window.alert(
+                `"${currentText.slice(krock.start, krock.end)}" är redan markerat som `
+                + `${ENTITY_LABELS[krock.entity_type] || krock.entity_type}.\n\n`
+                + 'Klicka på markeringen istället om typen är fel — då räknas den som '
+                + 'en felaktig träff, vilket är den feedback optimeringen behöver.');
+            return false;
+        }
+        const finns = falseNegatives.some(
+            f => f.start === start && f.end === end && f.entity_type === typ);
+        if (!finns) falseNegatives.push({ start, end, entity_type: typ, text });
+        return true;
+    }
+
     function showEntityPopup(start, end, text) {
         const popup = document.getElementById('entity-popup');
         const list = document.getElementById('entity-popup-list');
@@ -244,15 +406,12 @@ const TextAnnotator = (() => {
             item.querySelector('.legend-dot').style.background = bg;
 
             item.addEventListener('click', () => {
-                falseNegatives.push({
-                    start, end, entity_type: t, text,
-                });
+                const ok = taggaFalseNegative(start, end, text, t);
                 popup.classList.add('hidden');
                 window.getSelection().removeAllRanges();
+                if (!ok) return;
                 notifyChange();
-                // Re-render to show the false negative mark
-                const container = document.getElementById('annotated-text');
-                applyFalseNegativeMarks(container);
+                applyFalseNegativeMarks(document.getElementById('annotated-text'));
             });
             list.appendChild(item);
         }
@@ -264,19 +423,33 @@ const TextAnnotator = (() => {
             popup.style.top = `${rect.bottom + window.scrollY + 5}px`;
             popup.style.left = `${rect.left + window.scrollX}px`;
         }
+        // Egen typ sist i listan — för uppgifter som inte finns bland de fördefinierade.
+        const egen = document.createElement('div');
+        egen.className = 'entity-popup-item entity-popup-custom';
+        egen.innerHTML = '<span class="legend-dot" style="background:#90a4ae"></span>+ Egen typ…';
+        egen.addEventListener('click', () => {
+            const namn = window.prompt(
+                'Vad ska den här sortens uppgift heta?\n' +
+                'Skriv namnet som du vill se det, t.ex. "Diarienummer" eller "Fastighetsbeteckning".');
+            const typ = addCustomType(namn);
+            if (!typ) return;
+            const ok = taggaFalseNegative(start, end, text, typ);
+            popup.classList.add('hidden');
+            window.getSelection().removeAllRanges();
+            if (!ok) return;
+            notifyChange();
+            applyFalseNegativeMarks(document.getElementById('annotated-text'));
+        });
+        list.appendChild(egen);
+
         popup.classList.remove('hidden');
     }
 
     function applyFalseNegativeMarks(container) {
-        // Remove existing marks
-        container.querySelectorAll('.false-negative-mark').forEach(m => {
-            const parent = m.parentNode;
-            while (m.firstChild) parent.insertBefore(m.firstChild, m);
-            parent.removeChild(m);
-        });
-
-        // This is simplified - for a production version we'd need TreeWalker
-        // For now, show false negatives as a separate indicator
+        // Ritar om hela texten. render() tar med falseNegatives, så markeringarna
+        // hamnar rätt utan DOM-kirurgi (som den gamla stubben aldrig gjorde).
+        if (!container || !currentText) return;
+        render(container, currentText, currentResults, currentReadOnly);
     }
 
     function showTooltip(e) {
@@ -307,6 +480,14 @@ const TextAnnotator = (() => {
         return { falsePositives: [...falsePositives], falseNegatives: [...falseNegatives] };
     }
 
+    // Används vid återupptagning av en session — utan detta gick tidigare
+    // markeringar förlorade även om de låg kvar på servern.
+    function setFeedback(fp, fn) {
+        falsePositives = Array.isArray(fp) ? [...fp] : [];
+        falseNegatives = Array.isArray(fn) ? [...fn] : [];
+        for (const f of falseNegatives) ensureColor(f.entity_type);
+    }
+
     function clearFeedback() {
         falsePositives = [];
         falseNegatives = [];
@@ -316,5 +497,9 @@ const TextAnnotator = (() => {
     function getEntityTypes() { return ENTITY_TYPES; }
     function getEntityLabels() { return ENTITY_LABELS; }
 
-    return { init, render, renderLegend, getFeedback, clearFeedback, getEntityTypes, getEntityLabels };
+    return { init, render, renderLegend, getFeedback, setFeedback, clearFeedback,
+             getEntityTypes, getEntityLabels, addCustomType,
+             // Exponerad för test. Positionsberäkningen är den del som tyst kan
+             // ge fel svar — allt annat syns direkt i gränssnittet.
+             getTextPosition };
 })();

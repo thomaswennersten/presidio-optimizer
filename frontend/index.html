@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Presidio Optimizer - PII-maskeringsoptimering</title>
-    <link rel="stylesheet" href="css/styles.css">
+    <link rel="stylesheet" href="css/styles.css?v=20260825">
 </head>
 <body>
     <header>
@@ -45,6 +45,13 @@
                 <div id="session-list"></div>
                 <p id="session-list-empty" class="session-list-empty hidden">Inga sessioner hittades. Skapa en ny session ovan.</p>
             </div>
+            <div class="card">
+                <h2>Publicerade regelverk</h2>
+                <p class="publ-info">Regelverk som maskera-applikationen kan använda.
+                   Att ta bort ett här påverkar inte sessionen — det kan publiceras igen.</p>
+                <div id="published-list"></div>
+                <p id="published-empty" class="session-list-empty hidden">Inga regelverk är publicerade än.</p>
+            </div>
         </div>
     </div>
 
@@ -76,6 +83,13 @@
             </div>
 
             <div class="entity-legend" id="entity-legend"></div>
+
+            <div class="textstorlek-kontroll">
+                <label for="textstorlek">Textstorlek</label>
+                <input type="range" id="textstorlek" min="0.9" max="1.8" step="0.05" value="1.05">
+                <span id="textstorlek-varde">1.05×</span>
+                <span style="margin-left:auto">Klicka på en markering för att avfärda den · markera text och högerklicka för att lägga till</span>
+            </div>
 
             <div class="annotated-text-container">
                 <div id="annotated-text" class="annotated-text"></div>
@@ -147,6 +161,8 @@
                 <div class="config-actions">
                     <button id="export-json-btn" class="btn btn-small btn-secondary">Exportera JSON</button>
                     <button id="export-yaml-btn" class="btn btn-small btn-secondary">Exportera YAML</button>
+                    <button id="publish-btn" class="btn btn-small btn-primary">Publicera till maskera</button>
+                    <span id="publish-status" class="publish-status"></span>
                 </div>
             </div>
         </section>
@@ -164,12 +180,12 @@
         <p id="loading-message">Bearbetar...</p>
     </div>
 
-    <script src="js/api-client.js"></script>
-    <script src="js/text-annotator.js"></script>
-    <script src="js/file-upload.js"></script>
-    <script src="js/config-panel.js"></script>
-    <script src="js/iteration-history.js"></script>
-    <script src="js/session-manager.js"></script>
-    <script src="js/app.js"></script>
+    <script src="js/api-client.js?v=20260825"></script>
+    <script src="js/text-annotator.js?v=20260825"></script>
+    <script src="js/file-upload.js?v=20260825"></script>
+    <script src="js/config-panel.js?v=20260825"></script>
+    <script src="js/iteration-history.js?v=20260825"></script>
+    <script src="js/session-manager.js?v=20260825"></script>
+    <script src="js/app.js?v=20260825"></script>
 </body>
 </html>

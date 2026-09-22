@@ -14,6 +14,7 @@ services:
       - UPLOAD_FOLDER=/tmp/uploads
       - CONFIG_DIR=/app/db/sessions
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - APP_PASSWORD=${APP_PASSWORD:?APP_PASSWORD saknas i .env}
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
   presidio-optimizer-frontend:

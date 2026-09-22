@@ -1,3 +1,16 @@
+/*
+ * Presidio Optimizer
+ * Copyright (C) 2026 Sambruk
+ *
+ * Detta program är fri programvara; du får sprida och ändra det enligt
+ * villkoren i GNU General Public License version 2, som den publicerats av
+ * Free Software Foundation.
+ *
+ * Programmet distribueras i hopp om att det ska vara användbart, men UTAN
+ * NÅGON GARANTI. Se GNU General Public License för fler detaljer.
+ * Se filen LICENSE.
+ */
+
 /**
  * API-kommunikationslager för Presidio Optimizer.
  */
@@ -97,6 +110,30 @@ const API = (() => {
             return request('GET', '/sessions');
         },
 
+        // Tar bort sessionen med text, feedback och iterationer. Publicerade
+        // regelverk ligger kvar i maskera — svaret räknar upp vilka.
+        deleteSession(sessionId) {
+            return request('DELETE', `/session/${encodeURIComponent(sessionId)}`);
+        },
+
+        // Allt som behövs för att återuppta en session (text, träffar, feedback).
+        getSessionState(sessionId) {
+            return request('GET', `/session/${sessionId}/state`);
+        },
+
+        // Kopierar sessionens regelverk till den katalog pii-mask-mcp monterar.
+        publishConfig(sessionId) {
+            return request('POST', `/session/${sessionId}/publish`);
+        },
+
+        listPublished() {
+            return request('GET', '/published');
+        },
+
+        deletePublished(configId) {
+            return request('DELETE', `/published/${encodeURIComponent(configId)}`);
+        },
+
         uploadDocument(sessionId, file) {
             const fd = new FormData();
             fd.append('file', file);
@@ -107,10 +144,14 @@ const API = (() => {
             return request('POST', `/session/${sessionId}/analyze`);
         },
 
-        submitFeedback(sessionId, falsePositives, falseNegatives) {
+        submitFeedback(sessionId, falsePositives, falseNegatives, etiketter) {
             return request('POST', `/session/${sessionId}/feedback`, {
                 false_positives: falsePositives,
                 false_negatives: falseNegatives,
+                // Etiketterna för de egna typer som faktiskt använts i den här
+                // omgången. De skrivs in i regelverket så att maskera kan visa
+                // det namn verksamheten skrev, inte det normaliserade typnamnet.
+                etiketter: etiketter || {},
             });
         },
 

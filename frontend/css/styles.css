@@ -195,8 +195,10 @@ main {
 .annotated-text {
     padding: 1rem;
     font-family: 'Courier New', Courier, monospace;
-    font-size: 0.9rem;
-    line-height: 1.8;
+    /* Storleken styrs av reglaget ovanför texten; 1.05rem är utgångsläget.
+       0.9rem gjorde det svårt att träffa rätt ord med markören. */
+    font-size: var(--textstorlek, 1.05rem);
+    line-height: 2.0;
     white-space: pre-wrap;
     word-break: break-word;
     color: #cfd8dc;
@@ -259,7 +261,7 @@ main {
 .entity-SWEDISH_PHONE_NUMBER { background: rgba(76,175,80,0.3); border-bottom-color: #4caf50; }
 .entity-PHONE_NUMBER { background: rgba(102,187,106,0.3); border-bottom-color: #66bb6a; }
 .entity-EMAIL_ADDRESS { background: rgba(171,71,188,0.3); border-bottom-color: #ab47bc; }
-.entity-LOCATION { background: rgba(255,238,88,0.25); border-bottom-color: #ffee58; color: #fff9c4; }
+.entity-LOCATION { background: rgba(255,238,88,0.25); border-bottom-color: #ffee58; }
 .entity-DATE_TIME { background: rgba(77,208,225,0.3); border-bottom-color: #4dd0e1; }
 .entity-ORGANIZATION { background: rgba(255,183,77,0.3); border-bottom-color: #ffb74d; }
 .entity-CREDIT_CARD { background: rgba(244,143,177,0.3); border-bottom-color: #f48fb1; }
@@ -723,4 +725,143 @@ main {
     .split-panel { grid-template-columns: 1fr; }
     header h1 { font-size: 1.5rem; }
     .card { padding: 1rem; }
+}
+
+
+/* ===== Förklaring, egna typer och textstorlek (2026-08-19) ===== */
+
+/* Svatchen ritas med markeringens egen entity-klass, så färgen blir identisk.
+   Tidigare var den heltäckande medan markeringen var 30 % genomskinlig — det
+   gjorde att förklaringen inte gick att para ihop med texten. */
+.legend-swatch {
+    width: 22px;
+    height: 14px;
+    border-radius: 3px;
+    display: inline-block;
+    border-bottom: 2px solid;
+}
+.entity-legend { gap: 0.65rem; padding: 0.9rem; align-items: center; }
+.legend-item { font-size: 0.9rem; color: #cfd8dc; gap: 0.4rem; }
+.legend-count {
+    background: rgba(255,255,255,0.12);
+    border-radius: 10px;
+    padding: 0 6px;
+    font-size: 0.75rem;
+    color: #eceff1;
+}
+
+.entity-popup-item { padding: 0.45rem 0.7rem; font-size: 0.9rem; }
+.entity-popup-custom {
+    border-top: 1px solid rgba(255,255,255,0.15);
+    margin-top: 0.3rem;
+    font-style: italic;
+}
+
+.textstorlek-kontroll {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin-bottom: 0.6rem;
+    font-size: 0.8rem;
+    color: #b0bec5;
+}
+.textstorlek-kontroll input[type=range] { width: 150px; }
+
+/* ===== Egna taggningar (false negatives) — 2026-08-19 ===== */
+/* Ligger sist så den vinner över .entity-* som annars sätter samma bakgrund.
+   Färgen kommer fortfarande från typen, men den streckade ramen visar att det
+   är något DU har taggat, inte något systemet hittade. */
+.false-negative-mark {
+    border: 1px dashed #81c784;
+    border-bottom: 2px solid #4caf50;
+    border-radius: 4px;
+    padding: 1px 3px;
+    cursor: pointer;
+}
+.false-negative-mark:hover {
+    filter: brightness(1.25);
+    border-style: solid;
+}
+.fn-typ {
+    font-size: 0.62em;
+    color: #a5d6a7;
+    background: rgba(76,175,80,0.18);
+    border-radius: 3px;
+    padding: 0 4px;
+    margin-left: 2px;
+    vertical-align: super;
+    user-select: none;
+}
+
+/* Misslyckad optimering ska inte se ut som ett lyckat resultat (2026-08-19). */
+.optimering-fel {
+    background: rgba(192,57,43,0.18);
+    border-left: 4px solid #c0392b;
+    border-radius: 6px;
+    padding: 0.8rem 1rem;
+    color: #ffcdd2;
+}
+
+/* Publicering till maskera-applikationen (2026-08-19) */
+.publish-status { font-size: 0.8rem; margin-left: 0.6rem; }
+.publish-ok { color: #a5d6a7; }
+.publish-fel { color: #ef9a9a; }
+
+/* Publicerade regelverk (2026-08-20) */
+.publ-info { font-size: 0.8rem; color: #90a4ae; margin-bottom: 0.8rem; line-height: 1.5; }
+.publ-rad {
+    display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+    padding: 0.6rem 0.2rem; border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.publ-rad:last-child { border-bottom: 0; }
+.publ-text strong { display: block; font-size: 0.92rem; color: #eceff1; }
+.publ-text span { font-size: 0.76rem; color: #90a4ae; }
+.publ-bort {
+    background: none; border: 1px solid rgba(239,83,80,0.5); color: #ef9a9a;
+    border-radius: 6px; padding: 4px 12px; font-size: 0.78rem; cursor: pointer;
+    font-family: inherit; transition: 0.15s; flex: none;
+}
+.publ-bort:hover:not(:disabled) { background: rgba(239,83,80,0.15); color: #ffcdd2; }
+.publ-bort:disabled { opacity: 0.5; cursor: default; }
+.publ-fel { font-size: 0.8rem; color: #ef9a9a; }
+
+/* ===== Osäkra träffar (2026-08-24) =====
+   Poängen fanns bara i hovringstexten. Sedan analysgolvet sänktes syns fler
+   låga träffar, och de måste gå att skilja från säkra utan att hovra.
+
+   Signalen sitter i ramens FORM, inte i färgen: bottenramens färg bär redan
+   entitetstypen, och en markering som bara skiljer sig i färg är otillgänglig
+   för den som inte uppfattar färgskillnaden (WCAG 2.1, 1.4.1). */
+
+/* 0,40 — mönstret stämmer men kontrollsiffran gör det inte. */
+.entity-annotation.poang-lag {
+    border-bottom-style: dashed;
+    border-bottom-width: 2px;
+    opacity: 0.8;
+}
+
+/* 0,50–0,79 — kontrollsiffran stämmer inte, men ett kontextord höjde poängen. */
+.entity-annotation.poang-medel {
+    border-bottom-style: dotted;
+    border-bottom-width: 2px;
+}
+
+/* Genomstrykningen för falska positiva måste fortsatt vinna. */
+.entity-annotation.false-positive.poang-lag,
+.entity-annotation.false-positive.poang-medel {
+    opacity: 0.6;
+}
+
+.legend-swatch.poang-lag,
+.legend-swatch.poang-medel {
+    background: rgba(207,216,220,0.18);
+    border-bottom: 2px dashed #cfd8dc;
+}
+.legend-swatch.poang-medel { border-bottom-style: dotted; }
+
+.legend-osakerhet {
+    color: #b0bec5;
+    border-left: 1px solid rgba(207,216,220,0.25);
+    padding-left: 0.65rem;
+    margin-left: 0.2rem;
 }

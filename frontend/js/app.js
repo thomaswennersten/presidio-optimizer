@@ -1,3 +1,16 @@
+/*
+ * Presidio Optimizer
+ * Copyright (C) 2026 Sambruk
+ *
+ * Detta program är fri programvara; du får sprida och ändra det enligt
+ * villkoren i GNU General Public License version 2, som den publicerats av
+ * Free Software Foundation.
+ *
+ * Programmet distribueras i hopp om att det ska vara användbart, men UTAN
+ * NÅGON GARANTI. Se GNU General Public License för fler detaljer.
+ * Se filen LICENSE.
+ */
+
 /**
  * Huvudkontroller - Presidio Optimizer.
  */
@@ -60,8 +73,9 @@
     // --- Session Manager integration ---
     SessionManager.init(onSessionReady);
 
-    function onSessionReady(sid, name) {
+    async function onSessionReady(sid, name) {
         sessionId = sid;
+        document.body.dataset.sessionId = sid;
         sessionName = name;
         SessionManager.hide();
         mainContent.classList.remove('hidden');
@@ -70,13 +84,51 @@
         document.getElementById('session-indicator-name').textContent = name;
         sessionIndicator.classList.remove('hidden');
 
-        // Reset vy
         ['results-section', 'optimization-section', 'comparison-section', 'config-section', 'history-section'].forEach(
             id => document.getElementById(id).classList.add('hidden')
         );
 
         ConfigPanel.init(sessionId);
         IterationHistory.init(sessionId);
+
+        // Återuppta: hämta tillbaka text, träffar och feedback. Tidigare
+        // nollställdes vyn alltid, så en tidigare session såg tom ut och man
+        // fick ladda upp dokumentet igen trots att allt låg kvar på servern.
+        try {
+            const state = await API.getSessionState(sid);
+            if (state && state.har_analys) {
+                aterstallSession(state);
+            }
+        } catch (e) {
+            if (e.message !== 'AUTH_REQUIRED') {
+                console.warn('Kunde inte återuppta sessionen:', e.message);
+            }
+        }
+    }
+
+    function aterstallSession(state) {
+        const section = document.getElementById('results-section');
+        section.classList.remove('hidden');
+
+        const typeCounts = {};
+        state.results.forEach(r => {
+            typeCounts[r.entity_type] = (typeCounts[r.entity_type] || 0) + 1;
+        });
+        document.getElementById('results-stats').innerHTML =
+            `<span class="stat">Totalt: ${state.results.length}</span>` +
+            Object.entries(typeCounts).map(([t, c]) =>
+                `<span class="stat">${TextAnnotator.getEntityLabels()[t] || t}: ${c}</span>`
+            ).join('') +
+            '<span class="stat">Återupptagen session</span>';
+
+        TextAnnotator.renderLegend(document.getElementById('entity-legend'), state.results);
+        TextAnnotator.setFeedback(state.false_positives, state.false_negatives);
+        TextAnnotator.render(
+            document.getElementById('annotated-text'),
+            state.text,
+            state.results,
+            false
+        );
     }
 
     document.getElementById('back-to-sessions-btn').addEventListener('click', () => {
@@ -197,13 +249,28 @@
         section.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 
+    /* Bara etiketterna för de typer som faktiskt använts i omgången. Att skicka
+       alla egna typer användaren någonsin skapat hade lagt in poster i
+       regelverket för typer utan igenkännare — de hade då dykt upp i maskeras
+       lista över "typer ingen igenkännare hittar", vilket är sant men brus. */
+    function etiketterFor(falseNegatives) {
+        const alla = TextAnnotator.getEntityLabels();
+        const ut = {};
+        for (const fn of falseNegatives || []) {
+            const t = fn.entity_type;
+            if (t && alla[t] && alla[t] !== t) ut[t] = alla[t];
+        }
+        return ut;
+    }
+
     async function doOptimize() {
         if (!sessionId) return;
         const { falsePositives, falseNegatives } = TextAnnotator.getFeedback();
 
         try {
             showLoading('Skickar feedback...');
-            await API.submitFeedback(sessionId, falsePositives, falseNegatives);
+            await API.submitFeedback(sessionId, falsePositives, falseNegatives,
+                                     etiketterFor(falseNegatives));
 
             showLoading('LLM optimerar konfiguration...');
             const result = await API.optimize(sessionId);
@@ -222,8 +289,12 @@
         const section = document.getElementById('optimization-section');
         section.classList.remove('hidden');
 
-        document.getElementById('optimization-reasoning').textContent =
-            result.reasoning || 'Ingen förklaring tillgänglig.';
+        // Ett misslyckande får inte se ut som ett normalt resultat. Utan detta
+        // visades "kunde inte tolka svaret" med samma grå text som "inga
+        // ändringar behövdes" — användaren trodde att konfigurationen var bra.
+        const ruta = document.getElementById('optimization-reasoning');
+        ruta.textContent = result.reasoning || 'Ingen förklaring tillgänglig.';
+        ruta.classList.toggle('optimering-fel', !!result.fel);
 
         const changesList = document.getElementById('optimization-changes');
         changesList.innerHTML = '';
@@ -241,7 +312,10 @@
         });
 
         if (!result.changes || result.changes.length === 0) {
-            changesList.innerHTML = '<p style="color:#78909c">Inga andringar foreslagna.</p>';
+            changesList.innerHTML = result.fel
+                ? '<p class="optimering-fel">Optimeringen misslyckades — konfigurationen är '
+                  + 'oförändrad. Ingen slutsats kan dras om regelverkets kvalitet.</p>'
+                : '<p style="color:#78909c">Inga ändringar föreslagna.</p>';
         }
 
         section.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -335,3 +409,121 @@
         }
     }
 })();
+
+document.addEventListener('DOMContentLoaded', () => {
+    // Textstorlek — 0.9rem var för litet för att träffa rätt ord med markören.
+    const storlek = document.getElementById('textstorlek');
+    if (storlek) {
+        const sparad = localStorage.getItem('optimizer_textstorlek');
+        if (sparad) storlek.value = sparad;
+        // Skriv en egen stilregel istället för att bara sätta variabeln. Regeln
+        // överlever omritningar av texten och kan inte förlora mot en mer
+        // specifik selektor någon annanstans i stilmallen.
+        let regel = document.getElementById('textstorlek-regel');
+        if (!regel) {
+            regel = document.createElement('style');
+            regel.id = 'textstorlek-regel';
+            document.head.appendChild(regel);
+        }
+        const satt = () => {
+            const v = Number(storlek.value);
+            document.documentElement.style.setProperty('--textstorlek', v + 'rem');
+            regel.textContent = `.annotated-text { font-size: ${v}rem !important; }`;
+            document.getElementById('textstorlek-varde').textContent = v.toFixed(2) + '×';
+            localStorage.setItem('optimizer_textstorlek', storlek.value);
+        };
+        storlek.addEventListener('input', satt);
+        satt();
+    }
+});
+
+document.addEventListener('DOMContentLoaded', () => {
+    // Publicering: optimizern sparar regelverk under db/sessions/<id>/configs/,
+    // men maskera-applikationen läser db/configs/. Utan detta steg når ett nytt
+    // regelverk aldrig maskeringen.
+    const btn = document.getElementById('publish-btn');
+    const status = document.getElementById('publish-status');
+    if (!btn) return;
+    btn.addEventListener('click', async () => {
+        const sid = document.body.dataset.sessionId;
+        if (!sid) { alert('Ingen session vald.'); return; }
+        btn.disabled = true;
+        const gammal = btn.textContent;
+        btn.textContent = 'Publicerar…';
+        status.textContent = '';
+        status.className = 'publish-status';
+        try {
+            const r = await API.publishConfig(sid);
+            status.textContent = `Publicerad som "${r.config_id}" (v${r.senaste_version}) `
+                               + '— valbar i maskera direkt, ingen omstart behövs.';
+            status.classList.add('publish-ok');
+        } catch (e) {
+            status.textContent = 'Publiceringen misslyckades: ' + e.message;
+            status.classList.add('publish-fel');
+        } finally {
+            btn.disabled = false;
+            btn.textContent = gammal;
+        }
+    });
+});
+
+/* ===== Publicerade regelverk =====
+   Radering ligger HÄR och inte i maskera-applikationen: maskera saknar helt
+   autentisering och monterar inte ens regelverkskatalogen (mcp:n har den
+   skrivskyddad). Optimizer har både lösenord och skrivrättighet. */
+document.addEventListener('DOMContentLoaded', () => {
+    const lista = document.getElementById('published-list');
+    const tom = document.getElementById('published-empty');
+    if (!lista) return;
+
+    function datum(iso) {
+        const d = new Date(iso);
+        return isNaN(d) ? '' : d.toLocaleString('sv-SE',
+            { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    }
+    const esc = v => String(v ?? '').replace(/[&<>"']/g,
+        c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+    async function rita() {
+        let poster = [];
+        try {
+            poster = (await API.listPublished()).publicerade || [];
+        } catch (e) {
+            if (e.message === 'AUTH_REQUIRED') return;
+            lista.innerHTML = `<p class="publ-fel">Kunde inte hämta: ${esc(e.message)}</p>`;
+            return;
+        }
+        tom.classList.toggle('hidden', poster.length > 0);
+        lista.innerHTML = poster.map(p => `
+            <div class="publ-rad">
+                <div class="publ-text">
+                    <strong>${esc(p.namn)}</strong>
+                    <span>v${p.senaste_version} · ${esc(datum(p.skapad)) || 'okänt datum'}${p.har_meta ? '' : ' · äldre'}</span>
+                </div>
+                <button class="publ-bort" data-id="${esc(p.config_id)}"
+                        data-namn="${esc(p.namn)}" title="Ta bort ${esc(p.namn)}">Ta bort</button>
+            </div>`).join('');
+
+        lista.querySelectorAll('.publ-bort').forEach(b => b.addEventListener('click', async () => {
+            const namn = b.dataset.namn;
+            if (!confirm(`Ta bort regelverket "${namn}" från maskera-applikationen?\n\n`
+                       + 'Sessionen här i Optimizer påverkas inte — regelverket kan publiceras igen.\n'
+                       + 'Dokument som redan maskerats ändras inte.')) return;
+            b.disabled = true; b.textContent = 'Tar bort…';
+            try {
+                await API.deletePublished(b.dataset.id);
+                await rita();
+            } catch (e) {
+                alert('Kunde inte ta bort: ' + e.message);
+                b.disabled = false; b.textContent = 'Ta bort';
+            }
+        }));
+    }
+
+    // Rita om när sessionsvyn visas, så listan speglar nyss gjorda publiceringar.
+    rita();
+    const btn = document.getElementById('publish-btn');
+    if (btn) btn.addEventListener('click', () => setTimeout(rita, 900));
+    const tillbaka = document.getElementById('back-to-sessions-btn');
+    if (tillbaka) tillbaka.addEventListener('click', () => setTimeout(rita, 200));
+});

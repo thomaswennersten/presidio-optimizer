@@ -20,3 +20,18 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# Inloggningstokens — får aldrig committas
+db/auth_tokens.json
+
+# Arbetskopior från felsökning — ska aldrig committas.
+# '*.bak*' med stjärna efter bak, annars slipper varianter som
+# 'text-annotator.js.bak2-20260819' igenom.
+*.bak*
+*.orig
+*~
+
+# Intern arbetsdokumentation. Repot är publikt; TODO.md innehåller
+# driftuppgifter och beskriver bl.a. tidigare lösenordshantering.
+# Filen ligger kvar lokalt men spåras inte.
+TODO.md

@@ -1,3 +1,16 @@
+/*
+ * Presidio Optimizer
+ * Copyright (C) 2026 Sambruk
+ *
+ * Detta program är fri programvara; du får sprida och ändra det enligt
+ * villkoren i GNU General Public License version 2, som den publicerats av
+ * Free Software Foundation.
+ *
+ * Programmet distribueras i hopp om att det ska vara användbart, men UTAN
+ * NÅGON GARANTI. Se GNU General Public License för fler detaljer.
+ * Se filen LICENSE.
+ */
+
 /**
  * SessionManager - Hanterar namngivna persistenta sessioner.
  */
@@ -75,6 +88,7 @@ const SessionManager = (() => {
                     <div class="session-item-actions">
                         <button class="btn btn-small btn-secondary session-files-toggle" data-id="${s.id}">Filer</button>
                         <button class="btn btn-small btn-primary session-open-btn" data-id="${s.id}" data-name="${escapeAttr(s.name)}">Fortsatt</button>
+                        <button class="btn btn-small btn-fara session-delete-btn" data-id="${s.id}" data-name="${escapeAttr(s.name)}">Ta bort</button>
                     </div>
                 </div>
                 <div class="session-files-panel hidden" id="files-${s.id}">
@@ -85,11 +99,55 @@ const SessionManager = (() => {
             list.appendChild(item);
         }
 
-        // Event delegation
-        list.addEventListener('click', handleListClick);
+        // Delegerad hantering, kopplad EN gång. Tidigare lades en ny lyssnare
+        // på vid varje omritning av listan — innerHTML rensar bara barnen, inte
+        // lyssnare på behållaren. Efter tre omladdningar utlöstes varje klick
+        // tre gånger, vilket blir synligt först när en knapp gör något
+        // oåterkalleligt.
+        if (!list.dataset.kopplad) {
+            list.addEventListener('click', handleListClick);
+            list.dataset.kopplad = '1';
+        }
+    }
+
+    async function taBortSession(knapp) {
+        const id = knapp.dataset.id;
+        const namn = knapp.dataset.name;
+        if (!confirm(`Ta bort sessionen "${namn}"?\n\n`
+                   + 'Text, markeringar, iterationer och uppladdade filer försvinner '
+                   + 'och går inte att få tillbaka.\n\n'
+                   + 'Regelverk som publicerats till maskera ligger kvar och '
+                   + 'påverkas inte — de tas bort separat under "Publicerade regelverk".')) {
+            return;
+        }
+        knapp.disabled = true;
+        knapp.textContent = 'Tar bort…';
+        try {
+            const svar = await API.deleteSession(id);
+            const kvar = svar.publicerade_kvar || [];
+            if (kvar.length) {
+                // Sägs rakt ut. Annars tror den som städat att allt är borta,
+                // medan ett regelverk fortfarande är i drift i maskera.
+                alert(`Sessionen är borttagen.\n\n${kvar.length} publicerat `
+                    + `regelverk ligger kvar i maskera: `
+                    + kvar.map(k => k.config_id).join(', '));
+            }
+            await loadSessions();
+        } catch (e) {
+            if (e.message === 'AUTH_REQUIRED') throw e;
+            alert(`Kunde inte ta bort sessionen: ${e.message}`);
+            knapp.disabled = false;
+            knapp.textContent = 'Ta bort';
+        }
     }
 
     async function handleListClick(e) {
+        const deleteBtn = e.target.closest('.session-delete-btn');
+        if (deleteBtn) {
+            await taBortSession(deleteBtn);
+            return;
+        }
+
         const openBtn = e.target.closest('.session-open-btn');
         if (openBtn) {
             const id = openBtn.dataset.id;

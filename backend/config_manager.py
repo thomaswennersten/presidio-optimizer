@@ -1,3 +1,14 @@
+# Presidio Optimizer
+# Copyright (C) 2026 Sambruk
+#
+# Detta program är fri programvara; du får sprida och ändra det enligt
+# villkoren i GNU General Public License version 2, som den publicerats av
+# Free Software Foundation.
+#
+# Programmet distribueras i hopp om att det ska vara användbart, men UTAN
+# NÅGON GARANTI. Se GNU General Public License för fler detaljer.
+# Se filen LICENSE.
+
 """
 Versionshanterad konfigurationshantering för Presidio Optimizer.
 
@@ -54,6 +65,12 @@ class PresidioConfig:
     custom_recognizers: List[RecognizerDefinition] = field(default_factory=list)
     score_threshold: float = 0.5
     languages: List[str] = field(default_factory=lambda: ["sv", "en"])
+    # Undantag: träffar vars text står här filtreras bort EFTER analysen.
+    # Behövs eftersom Presidios deny_list är ADDITIV (den skapar träffar) och
+    # NER-träffar alltid får den fasta poängen 0.85 — varken deny_list eller
+    # tröskel kan alltså ta bort ett enskilt falskt positivt namn.
+    # Form: [{"text": "Användningspart", "entity_type": "PERSON"|null}]
+    exclusions: List[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -67,6 +84,7 @@ class PresidioConfig:
         config.description = data.get("description", "")
         config.score_threshold = data.get("score_threshold", 0.5)
         config.languages = data.get("languages", ["sv", "en"])
+        config.exclusions = data.get("exclusions", []) or []
 
         for name, ec in data.get("entity_settings", {}).items():
             if isinstance(ec, dict):

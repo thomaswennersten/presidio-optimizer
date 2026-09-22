@@ -1,3 +1,14 @@
+# Presidio Optimizer
+# Copyright (C) 2026 Sambruk
+#
+# Detta program är fri programvara; du får sprida och ändra det enligt
+# villkoren i GNU General Public License version 2, som den publicerats av
+# Free Software Foundation.
+#
+# Programmet distribueras i hopp om att det ska vara användbart, men UTAN
+# NÅGON GARANTI. Se GNU General Public License för fler detaljer.
+# Se filen LICENSE.
+
 import os
 import logging
 from typing import Optional

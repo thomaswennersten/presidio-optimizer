@@ -1,3 +1,14 @@
+# Presidio Optimizer
+# Copyright (C) 2026 Sambruk
+#
+# Detta program är fri programvara; du får sprida och ändra det enligt
+# villkoren i GNU General Public License version 2, som den publicerats av
+# Free Software Foundation.
+#
+# Programmet distribueras i hopp om att det ska vara användbart, men UTAN
+# NÅGON GARANTI. Se GNU General Public License för fler detaljer.
+# Se filen LICENSE.
+
 """
 FastAPI-applikation för Presidio Optimizer.
 
@@ -6,6 +17,9 @@ feedback, LLM-optimering och konfigurationsexport.
 """
 
 import os
+import re
+import time
+import json
 import uuid
 import hashlib
 import secrets
@@ -53,7 +67,38 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 # --- Authentication ---
 
 APP_PASSWORD = os.environ.get("APP_PASSWORD", "eghed")
-auth_tokens: set = set()
+
+# Tokens sparas på disk. Tidigare låg de i en set() i minnet, och eftersom
+# uvicorn kör med --reload mot en bind-monterad katalog räckte det att en fil
+# ändrades för att alla skulle loggas ut mitt i en session. Nu överlever de både
+# omladdning och omstart av containern.
+TOKEN_FIL = os.path.join(os.environ.get("CONFIG_DIR", "/app/db/sessions"), "..", "auth_tokens.json")
+TOKEN_GILTIGHET_DYGN = 14
+
+
+def _las_tokens() -> dict:
+    try:
+        with open(TOKEN_FIL, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+    nu = time.time()
+    return {t: exp for t, exp in data.items() if exp > nu}
+
+
+def _skriv_tokens(tokens: dict):
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(TOKEN_FIL)), exist_ok=True)
+        with open(TOKEN_FIL, "w", encoding="utf-8") as f:
+            json.dump(tokens, f)
+    except OSError as e:
+        logger.error(f"Kunde inte spara tokens: {e}")
+
+
+def _token_giltig(token: str) -> bool:
+    if not token:
+        return False
+    return token in _las_tokens()
 
 
 class LoginRequest(BaseModel):
@@ -67,7 +112,7 @@ class CreateSessionRequest(BaseModel):
 def require_auth(request: Request):
     """Dependency that checks for valid auth token."""
     token = request.headers.get("X-Auth-Token", "")
-    if token not in auth_tokens:
+    if not _token_giltig(token):
         raise HTTPException(401, "Unauthorized")
 
 
@@ -76,14 +121,16 @@ async def login(req: LoginRequest):
     if req.password != APP_PASSWORD:
         raise HTTPException(401, "Fel lösenord")
     token = secrets.token_hex(32)
-    auth_tokens.add(token)
+    tokens = _las_tokens()
+    tokens[token] = time.time() + TOKEN_GILTIGHET_DYGN * 86400
+    _skriv_tokens(tokens)
     return {"token": token}
 
 
 @app.get("/api/auth/check")
 async def auth_check(request: Request):
     token = request.headers.get("X-Auth-Token", "")
-    if token in auth_tokens:
+    if _token_giltig(token):
         return {"authenticated": True}
     raise HTTPException(401, "Unauthorized")
 
@@ -101,6 +148,11 @@ class FeedbackItem(BaseModel):
 class FeedbackRequest(BaseModel):
     false_positives: List[FeedbackItem] = []
     false_negatives: List[FeedbackItem] = []
+    # Etiketterna för egna typer, t.ex. {"PRIS_EXKL_MOMS": "Pris exklusive moms"}.
+    # Skrivs in i regelverkets entity_settings så att maskera kan visa det namn
+    # verksamheten faktiskt skrev. Utan detta känner regelverket bara till det
+    # normaliserade typnamnet, och etiketten stannar i optimizerns webbläsare.
+    etiketter: Dict[str, str] = {}
 
 
 class ThresholdUpdate(BaseModel):
@@ -214,11 +266,46 @@ async def submit_feedback(session_id: str, feedback: FeedbackRequest, _=Depends(
     }
     session_store.append_feedback(session_id, fb_entry)
 
+    sparade = _spara_etiketter(session_id, feedback.etiketter)
+
     return {
         "status": "feedback_received",
         "false_positives": len(feedback.false_positives),
         "false_negatives": len(feedback.false_negatives),
+        "etiketter": sparade,
     }
+
+
+def _spara_etiketter(session_id: str, etiketter: Dict[str, str]) -> int:
+    """Skriv in etiketter för egna typer i regelverkets entity_settings.
+
+    `save_config` skriver till `{version}.json` och stegar INTE versionen, så
+    det här skriver över den nuvarande versionen i stället för att skapa en ny.
+    Det är avsikten: en etikett är inte en regeländring och ska inte se ut som
+    en ny iteration i historiken.
+    """
+    if not etiketter:
+        return 0
+    config = config_manager.load_config(session_id) or get_default_config()
+    antal = 0
+    for typ, etikett in etiketter.items():
+        typ = str(typ or "").strip().upper()
+        etikett = str(etikett or "").strip()[:80]
+        if not typ or not etikett:
+            continue
+        post = config.entity_settings.get(typ)
+        if post is None:
+            config.entity_settings[typ] = EntityConfig(enabled=True, threshold=0.5,
+                                                       label=etikett)
+        elif post.label != etikett:
+            post.label = etikett
+        else:
+            continue
+        antal += 1
+    if antal:
+        config_manager.save_config(session_id, config)
+        logger.info(f"Etiketter sparade i regelverket: {antal} st")
+    return antal
 
 
 @app.post("/api/session/{session_id}/optimize")
@@ -255,6 +342,17 @@ async def optimize(session_id: str, _=Depends(require_auth)):
         text_sample=text[:1000],
     )
 
+    # Misslyckad optimering får INTE spara en ny konfigurationsversion. Tidigare
+    # ökade versionsräknaren även vid API-fel, vilket såg ut som att något hänt.
+    if llm_result.get("fel"):
+        return {
+            "fel": llm_result["fel"],
+            "reasoning": llm_result.get("reasoning", ""),
+            "changes": [],
+            "expected_improvements": "",
+            "new_config_version": config.version,
+        }
+
     # Apply changes to create new config version
     new_config = config_manager.create_next_version(
         session_id, config,
@@ -280,6 +378,7 @@ async def optimize(session_id: str, _=Depends(require_auth)):
     session_store.append_optimization(session_id, opt_entry)
 
     return {
+        "fel": llm_result.get("fel"),
         "reasoning": llm_result.get("reasoning", ""),
         "changes": changes,
         "expected_improvements": llm_result.get("expected_improvements", ""),
@@ -329,6 +428,220 @@ async def reanalyze(session_id: str, _=Depends(require_auth)):
         },
         "config_version": config.version,
         "text": text,
+    }
+
+
+# Optimizern skriver till db/sessions/<id>/configs/ men pii-mask-mcp monterar
+# db/configs/ — publicering kopierar mellan dem.
+SESSIONS_DIR = os.environ.get("CONFIG_DIR", "/app/db/sessions")
+PUBLICERAD_DIR = os.path.join(os.path.dirname(SESSIONS_DIR.rstrip("/")), "configs")
+
+
+def _slugga(namn: str) -> str:
+    """Kort, filsäkert katalognamn — det är detta som syns som config_id i maskera."""
+    import re as _re
+    s = (namn or "").strip().lower()
+    s = s.replace("å", "a").replace("ä", "a").replace("ö", "o")
+    s = _re.sub(r"[^a-z0-9]+", "-", s).strip("-")
+    return s[:40] or "regelverk"
+
+
+@app.post("/api/session/{session_id}/publish")
+async def publish_config(session_id: str, _=Depends(require_auth)):
+    """Publicera sessionens regelverk så maskera-applikationen kan använda det.
+
+    Optimizern skriver till db/sessions/<id>/configs/, men pii-mask-mcp monterar
+    db/configs/ — samma filformat, olika plats. Utan detta steg når ett nytt
+    regelverk aldrig maskeringen.
+    """
+    if not session_store.session_exists(session_id):
+        raise HTTPException(404, "Session not found")
+
+    kalla = os.path.join(SESSIONS_DIR, session_id, "configs")
+    if not os.path.isdir(kalla):
+        raise HTTPException(400, "Sessionen har inga sparade regelverk att publicera")
+
+    versioner = sorted(
+        int(f[:-5]) for f in os.listdir(kalla) if f.endswith(".json") and f[:-5].isdigit()
+    )
+    if not versioner:
+        raise HTTPException(400, "Sessionen har inga sparade regelverk att publicera")
+
+    sess = session_store.get_session(session_id) or {}
+    namn = _slugga(sess.get("name", "")) + "-" + session_id[:6]
+    mal = os.path.join(PUBLICERAD_DIR, namn)
+    os.makedirs(mal, exist_ok=True)
+
+    import shutil
+    for v in versioner:
+        shutil.copy2(os.path.join(kalla, f"{v}.json"), os.path.join(mal, f"{v}.json"))
+
+    # Härkomst i klartext. Utan detta blir väljaren i maskera en lista med
+    # uuid:er och LLM-skrivna utvärderingsstycken — omöjlig att orientera sig i.
+    with open(os.path.join(mal, "meta.json"), "w", encoding="utf-8") as f:
+        json.dump({
+            "kalla": "presidio-optimizer",
+            "session_namn": sess.get("name", ""),
+            "session_id": session_id,
+            "publicerad": datetime.utcnow().isoformat() + "Z",
+            "versioner": versioner,
+        }, f, ensure_ascii=False, indent=2)
+
+    logger.info(f"Publicerade {len(versioner)} version(er) till {mal}")
+    return {
+        "config_id": namn,
+        "versioner": versioner,
+        "senaste_version": versioner[-1],
+        "sokvag": mal,
+    }
+
+
+def _publicerad_sokvag(config_id: str) -> str:
+    """Validerar och löser ut sökvägen till ett publicerat regelverk.
+
+    Två spärrar: id:t måste vara enkla tecken, och den utlösta sökvägen måste
+    ligga KVAR inuti katalogen. Utan den andra kontrollen skulle "../../etc"
+    kunna ta sig ut, även om den första gör det osannolikt.
+    """
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", config_id or ""):
+        raise HTTPException(400, "Ogiltigt regelverks-id")
+    bas = os.path.abspath(PUBLICERAD_DIR)
+    mal = os.path.abspath(os.path.join(bas, config_id))
+    if os.path.commonpath([bas, mal]) != bas:
+        raise HTTPException(400, "Ogiltig sökväg")
+    return mal
+
+
+def _publicerade_fran(session_id: str) -> list:
+    """Regelverk i maskeras katalog som kommer från den här sessionen.
+
+    Behövs för att kunna säga rakt ut vad som INTE försvinner när en session
+    tas bort. Ett publicerat regelverk kan vara i drift, och den som städar
+    bland sina sessioner ska inte behöva gissa om driften påverkas.
+    """
+    ut = []
+    if not os.path.isdir(PUBLICERAD_DIR):
+        return ut
+    for namn in sorted(os.listdir(PUBLICERAD_DIR)):
+        meta_sokvag = os.path.join(PUBLICERAD_DIR, namn, "meta.json")
+        try:
+            with open(meta_sokvag, encoding="utf-8") as f:
+                meta = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if meta.get("session_id") == session_id:
+            ut.append({"config_id": namn, "namn": meta.get("session_namn") or namn})
+    return ut
+
+
+@app.delete("/api/session/{session_id}")
+async def delete_session(session_id: str, _=Depends(require_auth)):
+    """Ta bort en session med text, feedback, iterationer och filer.
+
+    Publicerade regelverk ligger kvar i maskera — de är en kopia i db/configs
+    och tas bort separat i panelen "Publicerade regelverk". Svaret räknar upp
+    vilka de är, så gränssnittet kan säga det i klartext i stället för att
+    lämna användaren i tron att allt försvann.
+    """
+    if not session_store.session_exists(session_id):
+        raise HTTPException(404, "Sessionen finns inte")
+
+    kvar = _publicerade_fran(session_id)
+    if not session_store.delete_session(session_id):
+        raise HTTPException(400, "Ogiltigt sessions-id")
+
+    logger.info(f"Tog bort session {session_id}"
+                + (f" — {len(kvar)} publicerade regelverk ligger kvar" if kvar else ""))
+    return {"borttagen": session_id, "publicerade_kvar": kvar}
+
+
+@app.get("/api/published")
+async def list_published(_=Depends(require_auth)):
+    """Regelverk som publicerats till maskera-applikationen."""
+    if not os.path.isdir(PUBLICERAD_DIR):
+        return {"publicerade": []}
+    ut = []
+    for namn in sorted(os.listdir(PUBLICERAD_DIR)):
+        d = os.path.join(PUBLICERAD_DIR, namn)
+        if not os.path.isdir(d):
+            continue
+        versioner = sorted(
+            int(f[:-5]) for f in os.listdir(d)
+            if f.endswith(".json") and f[:-5].isdigit()
+        )
+        if not versioner:
+            continue
+        meta = {}
+        try:
+            with open(os.path.join(d, "meta.json"), encoding="utf-8") as f:
+                meta = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            pass
+        skapad = ""
+        try:
+            with open(os.path.join(d, f"{versioner[-1]}.json"), encoding="utf-8") as f:
+                skapad = (json.load(f) or {}).get("created_at", "")
+        except (OSError, json.JSONDecodeError):
+            pass
+        ut.append({
+            "config_id": namn,
+            "namn": meta.get("session_namn") or namn,
+            "session_id": meta.get("session_id"),
+            "publicerad": meta.get("publicerad"),
+            "skapad": skapad,
+            "versioner": versioner,
+            "senaste_version": versioner[-1],
+            "har_meta": bool(meta),
+        })
+    ut.sort(key=lambda x: x.get("skapad") or "", reverse=True)
+    return {"publicerade": ut}
+
+
+@app.delete("/api/published/{config_id}")
+async def delete_published(config_id: str, _=Depends(require_auth)):
+    """Tar bort ett publicerat regelverk ur maskera-applikationens katalog.
+
+    Sessionen i optimizern rörs INTE — bara den publicerade kopian. Regelverket
+    kan alltså publiceras igen från sessionen om det behövs.
+    """
+    mal = _publicerad_sokvag(config_id)
+    if not os.path.isdir(mal):
+        raise HTTPException(404, "Regelverket finns inte")
+    import shutil
+    shutil.rmtree(mal)
+    logger.info("Avpublicerade regelverk: %s", config_id)
+    return {"borttaget": config_id}
+
+
+@app.get("/api/session/{session_id}/state")
+async def session_state(session_id: str, _=Depends(require_auth)):
+    """Allt som behövs för att återuppta en session i gränssnittet.
+
+    Innehållet har hela tiden legat kvar på disk, men det fanns ingen väg att
+    hämta tillbaka det — gränssnittet nollställde vyn och man fick ladda upp
+    dokumentet på nytt.
+    """
+    if not session_store.session_exists(session_id):
+        raise HTTPException(404, "Session not found")
+
+    text = session_store.load_text(session_id) or ""
+    results = session_store.load_analysis_results(session_id) or []
+    sess = session_store.get_session(session_id) or {}
+
+    # feedback.json är en HISTORIK (lista av omgångar) — den senaste omgången är
+    # den som gäller för vyn.
+    historik = session_store.get_feedback_history(session_id) or []
+    senaste = historik[-1] if historik else {}
+
+    return {
+        "session_id": session_id,
+        "name": sess.get("name", ""),
+        "text": text,
+        "results": results,
+        "false_positives": senaste.get("false_positives", []),
+        "false_negatives": senaste.get("false_negatives", []),
+        "current_config_version": sess.get("current_config_version"),
+        "har_analys": bool(results),
     }
 
 
@@ -479,6 +792,23 @@ def _apply_changes(config: PresidioConfig, changes: list):
                         enabled=enabled, threshold=0.5, label=target,
                     )
                 logger.info(f"Toggled {target}: enabled={enabled}")
+
+            elif action in ("add_exclusion", "remove_exclusion"):
+                ord_ = details.get("text") or target
+                et = details.get("entity_type")
+                if not hasattr(config, "exclusions") or config.exclusions is None:
+                    config.exclusions = []
+                finns = [u for u in config.exclusions
+                         if (u.get("text") or "").lower() == (ord_ or "").lower()
+                         and u.get("entity_type") == et]
+                if action == "add_exclusion":
+                    if ord_ and not finns:
+                        config.exclusions.append({"text": ord_, "entity_type": et})
+                        logger.info(f"Added exclusion: {ord_!r} ({et or 'alla typer'})")
+                else:
+                    for u in finns:
+                        config.exclusions.remove(u)
+                    logger.info(f"Removed exclusion: {ord_!r}")
 
             elif action == "adjust_global_threshold":
                 new_threshold = details.get("new_threshold", 0.5)

@@ -1,3 +1,14 @@
+# Presidio Optimizer
+# Copyright (C) 2026 Sambruk
+#
+# Detta program är fri programvara; du får sprida och ändra det enligt
+# villkoren i GNU General Public License version 2, som den publicerats av
+# Free Software Foundation.
+#
+# Programmet distribueras i hopp om att det ska vara användbart, men UTAN
+# NÅGON GARANTI. Se GNU General Public License för fler detaljer.
+# Se filen LICENSE.
+
 """
 Claude API-integration för LLM-driven Presidio-konfigurationsoptimering.
 
@@ -13,7 +24,9 @@ from typing import Dict, Any, Optional
 logger = logging.getLogger(__name__)
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-MODEL = "claude-sonnet-4-20250514"
+# claude-sonnet-4-20250514 är avvecklad och gav 404 på varje optimering
+# (upptäckt 2026-08-19). Håll denna aktuell — felet syns annars bara i loggen.
+MODEL = "claude-sonnet-5"
 
 SYSTEM_PROMPT = """Du är en expert på Microsoft Presidio, ett ramverk för PII-detektion (Personally Identifiable Information). Du hjälper till att optimera Presidio-konfigurationer för svensk text.
 
@@ -22,7 +35,7 @@ SYSTEM_PROMPT = """Du är en expert på Microsoft Presidio, ett ramverk för PII
 - **Recognizers** kan vara:
   - Pattern-baserade (regex med score)
   - NER-baserade (spaCy-modeller)
-  - Deny-list-baserade (exakta strängmatchningar)
+  - Deny-list-baserade (exakta strängmatchningar som LÄGGER TILL träffar)
 - Varje recognizer har **context_words** som höjer score vid närhet till nyckelord
 - **score_threshold** (global) filtrerar bort resultat under tröskeln
 
@@ -69,6 +82,32 @@ Du kan föreslå följande ändringar i JSON-format:
      "new_threshold": 0.45
    }}
    ```
+
+6. **add_exclusion** - Undanta ett enskilt ord från en entitetstyp
+   ```json
+   {"action": "add_exclusion", "target": "Användningspart", "details": {
+     "text": "Användningspart",
+     "entity_type": "PERSON"
+   }}
+   ```
+   Sätt `entity_type` till null för att undanta ordet oavsett typ.
+   Motsatsen är `remove_exclusion` med samma form.
+
+## VIKTIGT om falska positiva från NER-modellen
+
+Detta är den vanligaste feltypen och den har bara **en** korrekt lösning.
+
+- `deny_list` är **ADDITIV** — den SKAPAR träffar (score 1.0). Att lägga ett ord
+  i en deny_list för att bli av med det gör tvärtom: ordet blir garanterat
+  flaggat varje gång. Använd den ALDRIG för att ta bort en falsk positiv.
+- `adjust_threshold` hjälper **inte** mot NER-träffar. Presidio ger varje
+  spaCy-träff den fasta poängen **0.85** oavsett säkerhet. En tröskel över 0.85
+  tar bort ALLA namn, även de riktiga.
+- `toggle_entity` stänger av hela entitetstypen — aldrig rätt för ett enskilt ord.
+
+**Rätt åtgärd för ett felaktigt markerat ord är `add_exclusion`.**
+Tröskeljustering är däremot rätt för MÖNSTER-baserade träffar, som har
+varierande poäng.
 
 ## Svenska PII-regler
 - **Personnummer**: YYYYMMDD-XXXX, valideras med Luhn-checksumma
@@ -129,17 +168,66 @@ async def optimize_config(
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
         message = client.messages.create(
             model=MODEL,
-            max_tokens=4096,
+            # 🔴 Tanketokens räknas mot max_tokens. Med 8192 hann adaptivt
+            # tankeläge äta upp hela utrymmet på ett stort regelverk, och svaret
+            # innehöll BARA ett thinking-block — HTTP 200, stop_reason
+            # "max_tokens", noll textblock. Det såg ut som ett tomt svar från
+            # modellen men var en för snäv gräns.
+            max_tokens=16000,
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_prompt}],
+            # Adaptivt tankeläge — uppgiften är en avvägning mellan feedbackmönster
+            # och konfigurationsåtgärder, inte en uppslagning. Notera att
+            # budget_tokens avvisas av Sonnet 5; adaptive är rätt form.
+            thinking={"type": "adaptive"},
+            # Uppgiften är avgränsad: läs feedback, föreslå konfigurationsändringar.
+            # Standard är "high", vilket lägger mer i tankeledet än den behöver
+            # och tränger undan själva svaret.
+            output_config={"effort": "medium"},
         )
 
-        response_text = message.content[0].text
+        logger.info("Optimering: stop_reason=%s, block=%s, tokens in/ut=%s/%s",
+                    getattr(message, "stop_reason", "?"),
+                    [getattr(b, "type", "?") for b in (message.content or [])],
+                    getattr(getattr(message, "usage", None), "input_tokens", "?"),
+                    getattr(getattr(message, "usage", None), "output_tokens", "?"))
+
+        response_text = _text_ur_svaret(message)
+        if not response_text:
+            # Skilj på "tog slut på utrymme" och "svarade tomt". Det första går
+            # att åtgärda, det andra inte — och tidigare såg de likadana ut.
+            if getattr(message, "stop_reason", None) == "max_tokens":
+                logger.error("Svaret tog slut vid max_tokens innan något textblock "
+                             "hann skrivas; blocktyper: %s",
+                             [getattr(b, "type", "?") for b in (message.content or [])])
+                return _error_response(
+                    "Svaret nådde tokengränsen innan modellen hann skriva något "
+                    "förslag. Regelverket eller feedbacken är för stor för en "
+                    "omgång — markera färre träffar åt gången och försök igen."
+                )
+            logger.error("Inget textblock i svaret; blocktyper: %s",
+                         [getattr(b, "type", "?") for b in (message.content or [])])
+            return _error_response("Modellen returnerade inget textinnehåll")
         return _parse_response(response_text)
 
     except Exception as e:
         logger.error(f"Claude API error: {e}")
         return _error_response(f"API error: {str(e)}")
+
+
+def _text_ur_svaret(message) -> str:
+    """Plocka ut textinnehållet ur ett Messages-svar.
+
+    Tidigare läste koden `message.content[0].text` rakt av. Med adaptivt
+    tankeläge är det första blocket ofta ett ThinkingBlock, som saknar `.text` —
+    därav felet "'ThinkingBlock' object has no attribute 'text'". Felet var
+    dessutom sporadiskt, eftersom tankeläget slår till beroende på uppgiften.
+    """
+    delar = []
+    for block in (message.content or []):
+        if getattr(block, "type", None) == "text":
+            delar.append(block.text)
+    return "\n".join(delar).strip()
 
 
 def _build_user_prompt(config: dict, feedback: Dict[str, Any], text_sample: str) -> str:
@@ -230,8 +318,12 @@ def _parse_response(text: str) -> Dict[str, Any]:
     except json.JSONDecodeError:
         pass
 
+    # Markera misslyckandet uttryckligen. Utan flaggan blev "kunde inte tolka
+    # svaret" visuellt identiskt med "inga ändringar behövdes" i gränssnittet.
     return {
-        "reasoning": "Could not parse LLM response as JSON",
+        "fel": "Modellens svar gick inte att tolka som JSON.",
+        "reasoning": "Svaret från modellen kunde inte tolkas som JSON. "
+                     "Konfigurationen är oförändrad.",
         "changes": [],
         "expected_improvements": "",
         "raw_response": text[:2000],
@@ -240,7 +332,9 @@ def _parse_response(text: str) -> Dict[str, Any]:
 
 def _error_response(msg: str) -> Dict[str, Any]:
     return {
-        "reasoning": f"Error: {msg}",
+        "fel": msg,
+        "reasoning": f"Optimeringen kunde inte genomföras: {msg}. "
+                     "Konfigurationen är oförändrad.",
         "changes": [],
         "expected_improvements": "",
     }
