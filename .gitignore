@@ -10,8 +10,8 @@ dist/
 build/
 
 # Session data
-db/sessions/
-db/configs/
+**/db/sessions/
+**/db/configs/
 
 # OS
 .DS_Store
@@ -22,7 +22,7 @@ Thumbs.db
 .idea/
 
 # Inloggningstokens — får aldrig committas
-db/auth_tokens.json
+**/db/auth_tokens.json
 
 # Arbetskopior från felsökning — ska aldrig committas.
 # '*.bak*' med stjärna efter bak, annars slipper varianter som
@@ -35,3 +35,19 @@ db/auth_tokens.json
 # driftuppgifter och beskriver bl.a. tidigare lösenordshantering.
 # Filen ligger kvar lokalt men spåras inte.
 TODO.md
+
+# Mönster med snedstreck är rotrelativa i git. När optimizern flyttades ned i
+# optimizer/ slutade db/sessions/ m.fl. matcha, och 54 filer med sessionsdata
+# och inloggningstokens var på väg in i ett publikt repo. Därav **/ framför.
+**/uploads/
+**/outputs/
+
+# Driftens egen nginx-kopia: pekar på den här maskinens brygga (172.17.0.1)
+# och hör inte hemma i ett publikt repo. Repots nginx.conf är den portabla.
+**/nginx.drift.conf
+
+# Driftens egen compose: absoluta sökvägar och 172.17.0.1-bindningar.
+**/docker-compose.drift.yml
+
+# Internt testskript med absolut sökväg till den här maskinen.
+tester/

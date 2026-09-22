@@ -1,143 +1,34 @@
-# Presidio Optimizer
+# Presidio-verktyg
 
-AI-driven PII detection configuration optimizer built around [Microsoft Presidio](https://microsoft.github.io/presidio/). Upload documents, analyze PII entities, provide feedback on false positives/negatives, and let Claude AI automatically optimize the detection configuration.
+Två verktyg för att hitta och maskera personuppgifter i svenska dokument,
+byggda kring [Microsoft Presidio](https://microsoft.github.io/presidio/).
 
-Designed specifically for **Swedish PII detection** with support for personnummer, samordningsnummer, organisationsnummer, and Swedish phone numbers.
+| Katalog | Verktyg | Vad det gör |
+|---|---|---|
+| [`optimizer/`](optimizer/) | Presidio Optimizer | Ta fram och finjustera regelverk för PII-igenkänning. Ladda upp dokument, markera felaktiga och missade träffar, och låt en språkmodell föreslå ändringar i konfigurationen. |
+| [`anonymizer/`](anonymizer/) | Presidio Anonymizer | Maskera personuppgifter i enskilda dokument (DOCX, XLSX, PDF, TXT) med färdiga regler. |
 
-## Features
+Verktygen körs var för sig och har varsin `docker-compose.yml`. Se respektive
+katalogs dokumentation för hur man kommer igång.
 
-- **Document Upload** — Supports DOCX, XLSX, PDF, and TXT files
-- **PII Analysis** — Detects entities using Presidio with Swedish and English NER models
-- **Interactive Feedback** — Mark false positives by clicking entities, tag false negatives by selecting text
-- **AI Optimization** — Claude analyzes feedback patterns and suggests configuration changes (thresholds, recognizers, entity toggles)
-- **Version Tracking** — Every optimization creates a new versioned configuration
-- **Session Management** — Named persistent sessions for iterative refinement across multiple rounds
-- **Report Generation** — Downloadable Markdown reports with session history and optimization reasoning
-- **Config Export** — Export optimized configurations as JSON or YAML
+## Svenska personuppgifter
 
-## Architecture
+Båda innehåller egna igenkännare för personnummer, samordningsnummer,
+organisationsnummer och svenska telefonnummer, med Luhn-kontroll. Analysen är
+tvåspråkig (`sv_core_news_sm` + `en_core_web_sm`).
 
-```
-┌─────────────────┐     ┌──────────────────┐
-│  Nginx (frontend │────▶│  FastAPI backend  │
-│  + reverse proxy)│     │  (Presidio +      │
-│  Port 18011      │     │   Claude API)     │
-└─────────────────┘     │  Port 18010       │
-                         └──────────────────┘
-                                  │
-                         ┌────────▼────────┐
-                         │  File-based DB   │
-                         │  (db/sessions/)  │
-                         └─────────────────┘
-```
+🔴 **Verktygen maskerar — de anonymiserar inte.** Personuppgifter ersätts med
+platshållare som `[PERSON]` och `[PERSONNUMMER]`. Det är inte anonymisering i
+dataskyddsförordningens mening. Bedöm själva om resultatet räcker för ert ändamål,
+och granska alltid utfallet: den svenska språkmodellen är liten och missar ibland
+namn som saknar omgivande kontext.
 
-- **Frontend**: Vanilla HTML/CSS/JavaScript with a glassmorphism dark theme
-- **Backend**: Python 3.11, FastAPI, Microsoft Presidio, spaCy (sv + en models)
-- **LLM**: Claude API (Anthropic) for intelligent configuration optimization
-- **Storage**: File-based JSON — no external database required
+## Delad kod
 
-## Swedish PII Entities
+`optimizer/backend/document_processor.py` och `swedish_recognizers.py` är i dag
+identiska med sina motsvarigheter under `anonymizer/backend/`. De bör på sikt
+brytas ut till en gemensam modul — en rättning i det ena når i nuläget inte det andra.
 
-| Entity | Description |
-|--------|-------------|
-| SWEDISH_PERSONNUMMER | Swedish personal identity numbers (with Luhn validation) |
-| SWEDISH_SAMORDNINGSNUMMER | Coordination numbers (day 61–91) |
-| SWEDISH_ORGANISATIONSNUMMER | Organization numbers |
-| SWEDISH_PHONE_NUMBER | Swedish phone patterns (+46, 07X, 0XX) |
+## Licens
 
-Plus all standard Presidio entities: PERSON, EMAIL_ADDRESS, PHONE_NUMBER, LOCATION, DATE_TIME, CREDIT_CARD, IBAN_CODE, IP_ADDRESS, URL, etc.
-
-## Quick Start
-
-### Prerequisites
-
-- Docker and Docker Compose
-- An Anthropic API key
-
-### Setup
-
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/thomaswennersten/presidio-optimizer.git
-   cd presidio-optimizer
-   ```
-
-2. Create your environment file:
-   ```bash
-   cp .env.example .env
-   # Edit .env and add your Anthropic API key
-   ```
-
-3. Start the application:
-   ```bash
-   docker-compose up -d --build
-   ```
-
-4. Access the application:
-   - Frontend: `http://localhost:18011`
-   - API: `http://localhost:18010`
-
-### Usage
-
-1. **Create a session** — Give it a descriptive name
-2. **Upload a document** — Drag & drop or click to upload (DOCX, XLSX, PDF, TXT)
-3. **Run analysis** — Presidio scans the document for PII entities
-4. **Review results** — Entities are highlighted in the text with color-coded categories
-5. **Provide feedback** — Click entities to mark false positives, select text to tag false negatives
-6. **Optimize** — Claude analyzes your feedback and generates an improved configuration
-7. **Iterate** — Re-analyze with the new config and repeat until satisfied
-8. **Export** — Download the optimized configuration as JSON or YAML
-
-## Project Structure
-
-```
-presidio-optimizer/
-├── docker-compose.yml          # Standalone Docker orchestration
-├── Dockerfile                  # Python 3.11 + spaCy models
-├── nginx.conf                  # Reverse proxy configuration
-├── .env.example                # Environment variable template
-├── backend/
-│   ├── main.py                 # FastAPI application & endpoints
-│   ├── presidio_service.py     # Presidio analyzer engine
-│   ├── config_manager.py       # Versioned config persistence
-│   ├── session_store.py        # File-based session storage
-│   ├── document_processor.py   # Multi-format text extraction
-│   ├── feedback_processor.py   # Feedback normalization & aggregation
-│   ├── llm_optimizer.py        # Claude API integration
-│   ├── custom_recognizer_factory.py  # Dynamic recognizer creation
-│   ├── swedish_recognizers.py  # Swedish-specific PII recognizers
-│   └── requirements.txt        # Python dependencies
-├── frontend/
-│   ├── index.html              # Main SPA page
-│   ├── css/styles.css          # Dark glassmorphism theme
-│   └── js/
-│       ├── app.js              # Main application controller
-│       ├── api-client.js       # REST API client
-│       ├── text-annotator.js   # Interactive text highlighting
-│       ├── file-upload.js      # Drag & drop file handling
-│       ├── config-panel.js     # Configuration viewer & export
-│       ├── iteration-history.js # Version timeline
-│       └── session-manager.js  # Session CRUD
-└── db/                         # Persistent file-based storage
-    └── sessions/               # Per-session data (gitignored)
-```
-
-## API Endpoints
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/sessions` | Create a new session |
-| GET | `/api/sessions` | List all sessions |
-| GET | `/api/sessions/{id}` | Get session details |
-| DELETE | `/api/sessions/{id}` | Delete a session |
-| POST | `/api/sessions/{id}/upload` | Upload a document |
-| POST | `/api/sessions/{id}/analyze` | Run PII analysis |
-| POST | `/api/sessions/{id}/feedback` | Submit feedback |
-| POST | `/api/sessions/{id}/optimize` | Trigger AI optimization |
-| GET | `/api/sessions/{id}/config` | Get current configuration |
-| GET | `/api/sessions/{id}/config/export` | Export config (JSON/YAML) |
-| GET | `/api/sessions/{id}/report` | Download analysis report |
-
-## License
-
-MIT
+GPL-2.0, se [LICENSE](LICENSE). Copyright (C) 2026 Sambruk.
