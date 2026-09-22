@@ -66,7 +66,11 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # --- Authentication ---
 
-APP_PASSWORD = os.environ.get("APP_PASSWORD", "eghed")
+# Inget standardvärde med avsikt: en tjänst som skyddas av ett lösenord som
+# står i källkoden är oskyddad — och repot är publikt. Sätt APP_PASSWORD i .env.
+APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
+if not APP_PASSWORD:
+    raise RuntimeError("APP_PASSWORD saknas — sätt den i .env innan start.")
 
 # Tokens sparas på disk. Tidigare låg de i en set() i minnet, och eftersom
 # uvicorn kör med --reload mot en bind-monterad katalog räckte det att en fil
