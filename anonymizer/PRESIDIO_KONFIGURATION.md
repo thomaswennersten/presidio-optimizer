@@ -72,7 +72,7 @@ Mellanslag och bindestreck ar valfria.
 ### Analysera text
 
 ```bash
-curl -X POST http://localhost:18000/api/analyze \
+curl -X POST http://localhost:8080/api/analyze \
   -H "Content-Type: application/json" \
   -d '{
     "text": "Erik Johansson har personnummer 19900101-1234 och telefon 070-123 45 67",
@@ -83,7 +83,7 @@ curl -X POST http://localhost:18000/api/analyze \
 ### Anonymisera text
 
 ```bash
-curl -X POST http://localhost:18000/api/anonymize \
+curl -X POST http://localhost:8080/api/anonymize \
   -H "Content-Type: application/json" \
   -d '{
     "text": "Erik Johansson har personnummer 19900101-1234 och telefon 070-123 45 67",

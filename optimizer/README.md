@@ -21,8 +21,8 @@ Designed specifically for **Swedish PII detection** with support for personnumme
 ┌─────────────────┐     ┌──────────────────┐
 │  Nginx (frontend │────▶│  FastAPI backend  │
 │  + reverse proxy)│     │  (Presidio +      │
-│  Port 18011      │     │   Claude API)     │
-└─────────────────┘     │  Port 18010       │
+│  Port 8081       │     │   Claude API)     │
+└─────────────────┘     │  Port 8000        │
                          └──────────────────┘
                                   │
                          ┌────────▼────────┐
@@ -58,8 +58,8 @@ Plus all standard Presidio entities: PERSON, EMAIL_ADDRESS, PHONE_NUMBER, LOCATI
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/thomaswennersten/presidio-optimizer.git
-   cd presidio-optimizer
+   git clone https://github.com/thomaswennersten/presidio-verktyg.git
+   cd presidio-verktyg/optimizer
    ```
 
 2. Create your environment file:
@@ -74,8 +74,8 @@ Plus all standard Presidio entities: PERSON, EMAIL_ADDRESS, PHONE_NUMBER, LOCATI
    ```
 
 4. Access the application:
-   - Frontend: `http://localhost:18011`
-   - API: `http://localhost:18010`
+   - Frontend: `http://localhost:8081`
+   - API: via frontend på `/api/`
 
 ### Usage
 
@@ -91,7 +91,7 @@ Plus all standard Presidio entities: PERSON, EMAIL_ADDRESS, PHONE_NUMBER, LOCATI
 ## Project Structure
 
 ```
-presidio-optimizer/
+optimizer/
 ├── docker-compose.yml          # Standalone Docker orchestration
 ├── Dockerfile                  # Python 3.11 + spaCy models
 ├── nginx.conf                  # Reverse proxy configuration
